@@ -1,0 +1,4 @@
+*.pkg
+*.dmg
+Discord.app
+__pycache__

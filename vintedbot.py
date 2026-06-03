@@ -3,7 +3,7 @@ import asyncio
 from curl_cffi import requests
 from datetime import datetime, timezone
 
-TOKEN = import os; TOKEN = os.environ.get("DISCORD_TOKEN")
+TOKEN = import os; TOKEN = os.environ.get("DISCORD_TOKEN") or os.environ.get("TOKEN")
 
 CANAUX = {
     "iphone 11 pro max": (1510863948810027119, 100),
