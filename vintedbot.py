@@ -1,12 +1,21 @@
 import discord
 from discord.ui import View, Button
+from discord import app_commands
 import asyncio
 import random
 import time
+import os
+import stripe
+from aiohttp import web
 from curl_cffi import requests
 from datetime import datetime, timezone
 
-TOKEN = __import__("os").environ.get("DISCORD_TOKEN") or __import__("os").environ.get("TOKEN")
+TOKEN = os.environ.get("DISCORD_TOKEN") or os.environ.get("TOKEN")
+STRIPE_WEBHOOK_SECRET = os.environ.get("STRIPE_WEBHOOK_SECRET")
+
+ROLE_ID = 1512217244082503710
+LIEN_1MOIS = "https://buy.stripe.com/dRm28t2Akdm75zp5ed7Vm00"
+LIEN_3MOIS = "https://buy.stripe.com/6oUfZja2Mci37Hx7ml7Vm02"
 
 CANAUX = {
     "iphone 11 pro max": (1510863948810027119, 100),
@@ -70,14 +79,12 @@ USER_AGENTS = [
 _session = None
 _session_requetes = 0
 _session_creee = 0
-SESSION_MAX_REQUETES = 15   # ✅ Réduit (était 40) pour moins se faire détecter
-SESSION_MAX_AGE = 900       # ✅ Augmenté (était 600)
-_blocages_consecutifs = 0   # ✅ Nouveau : compteur de blocages
+SESSION_MAX_REQUETES = 15
+SESSION_MAX_AGE = 900
+_blocages_consecutifs = 0
 
 
-# ─────────────────────────────────────────────
-#  BOUTONS DISCORD
-# ─────────────────────────────────────────────
+# ─── BOUTONS DISCORD ───────────────────────────────────────────────────────────
 
 class AnnonceView(View):
     def __init__(self, lien: str, titre: str, prix: float):
@@ -85,7 +92,6 @@ class AnnonceView(View):
         self.lien = lien
         self.titre = titre
         self.prix = prix
-
         self.add_item(Button(
             label="🔗 Voir sur Vinted",
             style=discord.ButtonStyle.link,
@@ -112,9 +118,7 @@ class AnnonceView(View):
         await interaction.response.send_message("🗑️ Annonce supprimée.", ephemeral=True)
 
 
-# ─────────────────────────────────────────────
-#  SESSION VINTED
-# ─────────────────────────────────────────────
+# ─── SESSION VINTED ────────────────────────────────────────────────────────────
 
 def nouvelle_session():
     global _session, _session_requetes, _session_creee, _blocages_consecutifs
@@ -123,7 +127,6 @@ def nouvelle_session():
             _session.close()
         except Exception:
             pass
-
     ua = random.choice(USER_AGENTS)
     s = requests.Session(impersonate="chrome124")
     s.headers.update({
@@ -135,8 +138,6 @@ def nouvelle_session():
         "Sec-Fetch-Dest": "empty",
         "Referer": "https://www.vinted.fr/",
     })
-
-    # ✅ Navigation réaliste : on visite la home + catalog avant l'API
     try:
         s.get("https://www.vinted.fr", timeout=15)
         time.sleep(random.uniform(2.0, 5.0))
@@ -144,7 +145,6 @@ def nouvelle_session():
         time.sleep(random.uniform(2.0, 4.0))
     except Exception:
         pass
-
     _session = s
     _session_requetes = 0
     _session_creee = time.time()
@@ -167,52 +167,31 @@ def get_session():
 
 def chercher_vinted(search):
     global _session_requetes, _blocages_consecutifs
-
-    for tentative in range(3):  # ✅ 3 tentatives max
+    for tentative in range(3):
         try:
             session = get_session()
             url = "https://www.vinted.fr/api/v2/catalog/items"
-            params = {
-                "search_text": search,
-                "order": "newest_first",
-                "per_page": 48,  # ✅ Réduit de 96 → 48
-            }
-
-            # ✅ Délai aléatoire AVANT chaque requête
+            params = {"search_text": search, "order": "newest_first", "per_page": 48}
             time.sleep(random.uniform(3.0, 8.0))
-
             r = session.get(url, params=params, timeout=20)
             _session_requetes += 1
-
             if r.status_code in (401, 403, 429):
                 _blocages_consecutifs += 1
-                print(f"Blocage detecte ({r.status_code}), rotation de session...")
-
-                # ✅ Backoff exponentiel selon le nombre de blocages
                 attente = random.uniform(30, 60) * min(_blocages_consecutifs, 4)
-                print(f"Attente {attente:.0f}s avant retry (blocage #{_blocages_consecutifs})...")
                 nouvelle_session()
                 time.sleep(attente)
-                continue  # ✅ On retry avec la nouvelle session
-
-            # ✅ Réponse OK
+                continue
             if r.status_code != 200 or not r.text:
-                print(f"Reponse inattendue ({r.status_code}) pour '{search}'")
                 return []
-
             try:
                 data = r.json()
             except Exception:
                 return []
-
-            _blocages_consecutifs = 0  # ✅ Reset si succès
+            _blocages_consecutifs = 0
             return data.get("items", [])
-
         except Exception as e:
             print(f"Erreur requete '{search}' (tentative {tentative+1}): {e}")
             time.sleep(random.uniform(5, 15))
-
-    print(f"Echec apres 3 tentatives pour '{search}'")
     return []
 
 
@@ -230,58 +209,43 @@ def contient_mot_exclu(titre):
     return any(mot in titre for mot in MOTS_EXCLUS)
 
 
-# ─────────────────────────────────────────────
-#  SCANNER
-# ─────────────────────────────────────────────
+# ─── SCANNER ───────────────────────────────────────────────────────────────────
 
 async def scanner(client):
     await client.wait_until_ready()
     print("Scan demarre...")
-
     while not client.is_closed():
         recherches = RECHERCHES.copy()
         random.shuffle(recherches)
-
         for search in recherches:
-            # ✅ chercher_vinted est bloquant (time.sleep) → on l'exécute dans un thread
-            items = await asyncio.get_event_loop().run_in_executor(
-                None, chercher_vinted, search
-            )
+            items = await asyncio.get_event_loop().run_in_executor(None, chercher_vinted, search)
             nouvelles = 0
-
             for item in items:
                 item_id = item.get("id")
                 if item_id in vus:
                     continue
                 vus.add(item_id)
-
                 titre = item.get("title", "")
                 if contient_mot_exclu(titre):
                     continue
-
                 modele = extraire_modele(titre)
                 if not modele:
                     continue
-
                 canal_id, prix_max = CANAUX[modele]
                 prix_brut = item.get("price", {})
                 if isinstance(prix_brut, dict):
                     prix = float(prix_brut.get("amount", 0))
                 else:
                     prix = float(prix_brut)
-
                 if prix < PRIX_MIN or prix > prix_max:
                     continue
-
                 lien = f"https://www.vinted.fr/items/{item_id}"
-
                 photo_url = None
                 photos = item.get("photos") or []
                 if photos:
                     p = photos[0]
                     photo_url = (
-                        p.get("full_size_url")
-                        or p.get("url")
+                        p.get("full_size_url") or p.get("url")
                         or p.get("thumbnails", [{}])[-1].get("url")
                     )
                 if not photo_url:
@@ -289,51 +253,83 @@ async def scanner(client):
                         item.get("photo", {}).get("full_size_url")
                         or item.get("photo", {}).get("url")
                     )
-
                 canal = client.get_channel(canal_id)
                 if canal:
-                    embed = discord.Embed(
-                        title=titre,
-                        url=lien,
-                        color=0x09B1BA,
-                    )
-                    embed.add_field(name="· Prix",    value=f"**{prix:.0f}€**",             inline=True)
-                    embed.add_field(name="· Modele",  value=modele.title(),                  inline=True)
-                    embed.add_field(name="\u200b",    value="\u200b",                        inline=True)
-                    embed.add_field(name="\u200b",    value="\u200b",                        inline=True)
-                    embed.add_field(name="\u200b",    value="\u200b",                        inline=True)
-                    embed.add_field(name="· Annonce", value=f"[Voir sur Vinted]({lien})",    inline=True)
+                    embed = discord.Embed(title=titre, url=lien, color=0x09B1BA)
+                    embed.add_field(name="· Prix", value=f"**{prix:.0f}€**", inline=True)
+                    embed.add_field(name="· Modele", value=modele.title(), inline=True)
+                    embed.add_field(name="\u200b", value="\u200b", inline=True)
+                    embed.add_field(name="\u200b", value="\u200b", inline=True)
+                    embed.add_field(name="\u200b", value="\u200b", inline=True)
+                    embed.add_field(name="· Annonce", value=f"[Voir sur Vinted]({lien})", inline=True)
                     if photo_url:
                         embed.set_image(url=photo_url)
                     embed.set_footer(text="Vinted")
-
                     view = AnnonceView(lien=lien, titre=titre, prix=prix)
                     await canal.send(embed=embed, view=view)
                     nouvelles += 1
-
             print(f"[{datetime.now().strftime('%H:%M:%S')}] {search}: {len(items)} annonces, {nouvelles} nouvelles")
-
-            # ✅ Délai entre chaque recherche (était 4-9s)
             await asyncio.sleep(random.uniform(12, 20))
-
-        # ✅ Pause entre chaque cycle (était 25-45s)
         pause = random.uniform(60, 120)
         print(f"Cycle termine. Prochaine analyse dans {pause:.0f}s...")
         await asyncio.sleep(pause)
 
 
-# ─────────────────────────────────────────────
-#  DEMARRAGE
-# ─────────────────────────────────────────────
+# ─── WEBHOOK STRIPE ────────────────────────────────────────────────────────────
+
+async def stripe_webhook(request):
+    payload = await request.read()
+    sig_header = request.headers.get("Stripe-Signature")
+    try:
+        event = stripe.Webhook.construct_event(payload, sig_header, STRIPE_WEBHOOK_SECRET)
+    except Exception as e:
+        return web.Response(status=400, text=str(e))
+    if event["type"] == "checkout.session.completed":
+        session = event["data"]["object"]
+        discord_id = session.get("metadata", {}).get("discord_id")
+        if discord_id:
+            for guild in client.guilds:
+                member = guild.get_member(int(discord_id))
+                if member:
+                    role = guild.get_role(ROLE_ID)
+                    if role:
+                        await member.add_roles(role)
+                        print(f"Role donne a {member.name}")
+    return web.Response(status=200, text="ok")
+
+
+async def start_webhook_server():
+    app = web.Application()
+    app.router.add_post("/webhook", stripe_webhook)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", 8080)
+    await site.start()
+    print("Serveur webhook demarre sur le port 8080")
+
+
+# ─── COMMANDE /payer ───────────────────────────────────────────────────────────
 
 intents = discord.Intents.default()
+intents.members = True
 client = discord.Client(intents=intents)
+tree = app_commands.CommandTree(client)
 
+@tree.command(name="payer", description="Obtenir l'accès premium")
+async def payer(interaction: discord.Interaction):
+    embed = discord.Embed(title="💳 Choisir ton abonnement", color=0x09B1BA)
+    embed.add_field(name="1 mois", value=f"[Payer 1 mois]({LIEN_1MOIS})", inline=False)
+    embed.add_field(name="3 mois", value=f"[Payer 3 mois]({LIEN_3MOIS})", inline=False)
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+# ─── DEMARRAGE ─────────────────────────────────────────────────────────────────
 
 @client.event
 async def on_ready():
     print(f"Bot connecte : {client.user}")
+    await tree.sync()
     client.loop.create_task(scanner(client))
-
+    client.loop.create_task(start_webhook_server())
 
 client.run(TOKEN)
