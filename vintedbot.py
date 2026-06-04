@@ -1,4 +1,5 @@
 import discord
+from discord.ui import View, Button
 import asyncio
 import random
 import time
@@ -56,7 +57,6 @@ MOTS_EXCLUS = [
     "tiroir", "sim", "portefeuille", "wallet", "flip", "support"
 ]
 
-# ─── User-Agent pool (navigateurs récents) ────────────────────────────────────
 USER_AGENTS = [
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
@@ -67,16 +67,57 @@ USER_AGENTS = [
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 14.4; rv:125.0) Gecko/20100101 Firefox/125.0",
 ]
 
-# ─── Gestion de session ────────────────────────────────────────────────────────
 _session = None
 _session_requetes = 0
 _session_creee = 0
-SESSION_MAX_REQUETES = 40          # recrée la session après N requêtes
-SESSION_MAX_AGE = 600              # … ou après 10 minutes
+SESSION_MAX_REQUETES = 15   # ✅ Réduit (était 40) pour moins se faire détecter
+SESSION_MAX_AGE = 900       # ✅ Augmenté (était 600)
+_blocages_consecutifs = 0   # ✅ Nouveau : compteur de blocages
+
+
+# ─────────────────────────────────────────────
+#  BOUTONS DISCORD
+# ─────────────────────────────────────────────
+
+class AnnonceView(View):
+    def __init__(self, lien: str, titre: str, prix: float):
+        super().__init__(timeout=None)
+        self.lien = lien
+        self.titre = titre
+        self.prix = prix
+
+        self.add_item(Button(
+            label="🔗 Voir sur Vinted",
+            style=discord.ButtonStyle.link,
+            url=lien,
+        ))
+
+    @discord.ui.button(label="🔖 Sauvegarder", style=discord.ButtonStyle.success, custom_id="save")
+    async def sauvegarder(self, interaction: discord.Interaction, button: Button):
+        try:
+            await interaction.user.send(
+                f"📌 **Annonce sauvegardée !**\n"
+                f"**{self.titre}** — {self.prix:.0f}€\n"
+                f"{self.lien}"
+            )
+            await interaction.response.send_message("✅ Envoyé en DM !", ephemeral=True)
+        except discord.Forbidden:
+            await interaction.response.send_message(
+                "❌ Impossible d'envoyer un DM (active tes DMs).", ephemeral=True
+            )
+
+    @discord.ui.button(label="❌ Ignorer", style=discord.ButtonStyle.danger, custom_id="ignore")
+    async def ignorer(self, interaction: discord.Interaction, button: Button):
+        await interaction.message.delete()
+        await interaction.response.send_message("🗑️ Annonce supprimée.", ephemeral=True)
+
+
+# ─────────────────────────────────────────────
+#  SESSION VINTED
+# ─────────────────────────────────────────────
 
 def nouvelle_session():
-    """Crée une session curl_cffi fraîche avec un User-Agent aléatoire."""
-    global _session, _session_requetes, _session_creee
+    global _session, _session_requetes, _session_creee, _blocages_consecutifs
     if _session is not None:
         try:
             _session.close()
@@ -94,18 +135,23 @@ def nouvelle_session():
         "Sec-Fetch-Dest": "empty",
         "Referer": "https://www.vinted.fr/",
     })
-    # Visite de la page d'accueil pour récupérer les cookies de session
+
+    # ✅ Navigation réaliste : on visite la home + catalog avant l'API
     try:
         s.get("https://www.vinted.fr", timeout=15)
-        time.sleep(random.uniform(1.5, 3.0))
+        time.sleep(random.uniform(2.0, 5.0))
+        s.get("https://www.vinted.fr/catalog", timeout=15)
+        time.sleep(random.uniform(2.0, 4.0))
     except Exception:
         pass
 
     _session = s
     _session_requetes = 0
     _session_creee = time.time()
-    print("Nouvelle session créée.")
+    _blocages_consecutifs = 0
+    print("Nouvelle session creee.")
     return _session
+
 
 def get_session():
     global _session, _session_requetes, _session_creee
@@ -118,47 +164,58 @@ def get_session():
         return nouvelle_session()
     return _session
 
-# ─── Scraping ─────────────────────────────────────────────────────────────────
+
 def chercher_vinted(search):
-    global _session_requetes
-    try:
-        session = get_session()
-        url = "https://www.vinted.fr/api/v2/catalog/items"
-        params = {
-            "search_text": search,
-            "order": "newest_first",
-            "per_page": 96,
-        }
-        # Délai humain avant la requête
-        time.sleep(random.uniform(1.0, 3.5))
+    global _session_requetes, _blocages_consecutifs
 
-        r = session.get(url, params=params, timeout=15)
-        _session_requetes += 1
+    for tentative in range(3):  # ✅ 3 tentatives max
+        try:
+            session = get_session()
+            url = "https://www.vinted.fr/api/v2/catalog/items"
+            params = {
+                "search_text": search,
+                "order": "newest_first",
+                "per_page": 48,  # ✅ Réduit de 96 → 48
+            }
 
-        # Vinted bloque → on recrée la session et on réessaie une fois
-        if r.status_code in (401, 403, 429):
-            print(f"Blocage détecté ({r.status_code}), rotation de session…")
-            nouvelle_session()
-            time.sleep(random.uniform(10, 20))
-            r = _session.get(url, params=params, timeout=15)
+            # ✅ Délai aléatoire AVANT chaque requête
+            time.sleep(random.uniform(3.0, 8.0))
+
+            r = session.get(url, params=params, timeout=20)
             _session_requetes += 1
 
-        if not r.text or r.status_code != 200:
-            print(f"Réponse inattendue ({r.status_code}) pour '{search}'")
-            return []
+            if r.status_code in (401, 403, 429):
+                _blocages_consecutifs += 1
+                print(f"Blocage detecte ({r.status_code}), rotation de session...")
 
-        try:
-            data = r.json()
-        except Exception:
-            return []
+                # ✅ Backoff exponentiel selon le nombre de blocages
+                attente = random.uniform(30, 60) * min(_blocages_consecutifs, 4)
+                print(f"Attente {attente:.0f}s avant retry (blocage #{_blocages_consecutifs})...")
+                nouvelle_session()
+                time.sleep(attente)
+                continue  # ✅ On retry avec la nouvelle session
 
-        return data.get("items", [])
+            # ✅ Réponse OK
+            if r.status_code != 200 or not r.text:
+                print(f"Reponse inattendue ({r.status_code}) pour '{search}'")
+                return []
 
-    except Exception as e:
-        print(f"Erreur requête '{search}': {e}")
-        return []
+            try:
+                data = r.json()
+            except Exception:
+                return []
 
-# ─── Filtrage ─────────────────────────────────────────────────────────────────
+            _blocages_consecutifs = 0  # ✅ Reset si succès
+            return data.get("items", [])
+
+        except Exception as e:
+            print(f"Erreur requete '{search}' (tentative {tentative+1}): {e}")
+            time.sleep(random.uniform(5, 15))
+
+    print(f"Echec apres 3 tentatives pour '{search}'")
+    return []
+
+
 def extraire_modele(titre):
     titre = titre.lower()
     modeles = sorted(CANAUX.keys(), key=lambda x: -len(x))
@@ -167,22 +224,29 @@ def extraire_modele(titre):
             return modele
     return None
 
+
 def contient_mot_exclu(titre):
     titre = titre.lower()
     return any(mot in titre for mot in MOTS_EXCLUS)
 
-# ─── Scanner principal ─────────────────────────────────────────────────────────
+
+# ─────────────────────────────────────────────
+#  SCANNER
+# ─────────────────────────────────────────────
+
 async def scanner(client):
     await client.wait_until_ready()
-    print("Scan démarré…")
+    print("Scan demarre...")
 
     while not client.is_closed():
-        # Ordre de recherche mélangé à chaque cycle pour paraître moins prévisible
         recherches = RECHERCHES.copy()
         random.shuffle(recherches)
 
         for search in recherches:
-            items = chercher_vinted(search)
+            # ✅ chercher_vinted est bloquant (time.sleep) → on l'exécute dans un thread
+            items = await asyncio.get_event_loop().run_in_executor(
+                None, chercher_vinted, search
+            )
             nouvelles = 0
 
             for item in items:
@@ -201,7 +265,6 @@ async def scanner(client):
 
                 canal_id, prix_max = CANAUX[modele]
                 prix_brut = item.get("price", {})
-                # L'API Vinted retourne parfois un dict {"amount": "...", "currency_code": "EUR"}
                 if isinstance(prix_brut, dict):
                     prix = float(prix_brut.get("amount", 0))
                 else:
@@ -212,7 +275,6 @@ async def scanner(client):
 
                 lien = f"https://www.vinted.fr/items/{item_id}"
 
-                # Récupération de la photo (plusieurs endroits possibles dans l'API)
                 photo_url = None
                 photos = item.get("photos") or []
                 if photos:
@@ -233,33 +295,45 @@ async def scanner(client):
                     embed = discord.Embed(
                         title=titre,
                         url=lien,
-                        color=0x09B1BA,  # couleur Vinted
+                        color=0x09B1BA,
                     )
-                    embed.add_field(name="💶 Prix", value=f"**{prix:.0f}€**", inline=True)
-                    embed.add_field(name="📱 Modèle", value=modele.title(), inline=True)
+                    embed.add_field(name="· Prix",    value=f"**{prix:.0f}€**",             inline=True)
+                    embed.add_field(name="· Modele",  value=modele.title(),                  inline=True)
+                    embed.add_field(name="\u200b",    value="\u200b",                        inline=True)
+                    embed.add_field(name="\u200b",    value="\u200b",                        inline=True)
+                    embed.add_field(name="\u200b",    value="\u200b",                        inline=True)
+                    embed.add_field(name="· Annonce", value=f"[Voir sur Vinted]({lien})",    inline=True)
                     if photo_url:
                         embed.set_image(url=photo_url)
                     embed.set_footer(text="Vinted")
-                    await canal.send(embed=embed)
+
+                    view = AnnonceView(lien=lien, titre=titre, prix=prix)
+                    await canal.send(embed=embed, view=view)
                     nouvelles += 1
 
             print(f"[{datetime.now().strftime('%H:%M:%S')}] {search}: {len(items)} annonces, {nouvelles} nouvelles")
 
-            # Pause variable entre chaque recherche (évite le pattern régulier)
-            await asyncio.sleep(random.uniform(4, 9))
+            # ✅ Délai entre chaque recherche (était 4-9s)
+            await asyncio.sleep(random.uniform(12, 20))
 
-        # Pause entre chaque cycle complet
-        pause = random.uniform(25, 45)
-        print(f"Cycle terminé. Prochaine analyse dans {pause:.0f}s…")
+        # ✅ Pause entre chaque cycle (était 25-45s)
+        pause = random.uniform(60, 120)
+        print(f"Cycle termine. Prochaine analyse dans {pause:.0f}s...")
         await asyncio.sleep(pause)
 
-# ─── Bot Discord ───────────────────────────────────────────────────────────────
+
+# ─────────────────────────────────────────────
+#  DEMARRAGE
+# ─────────────────────────────────────────────
+
 intents = discord.Intents.default()
 client = discord.Client(intents=intents)
 
+
 @client.event
 async def on_ready():
-    print(f"Bot connecté : {client.user}")
+    print(f"Bot connecte : {client.user}")
     client.loop.create_task(scanner(client))
+
 
 client.run(TOKEN)
