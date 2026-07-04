@@ -644,4 +644,4 @@ async def on_ready():
     client.loop.create_task(scanner_mercari(client))
     client.loop.create_task(start_webhook_server())
 
-client.run(TOKEN) 
+client.run(TOKEN)
