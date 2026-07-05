@@ -2,3 +2,5 @@ discord.py
 curl_cffi
 stripe
 aiohttp
+mercari
+
