@@ -66,6 +66,7 @@ RECHERCHES = [
     "gucci cap",
     "iphone icloud", "iphone bloqué icloud"
 ]
+PRIX_MIN = 30
 
 # ─── Mercari JP : recherches + taux de conversion ──────────────────────────────
 RECHERCHES_MERCARI = [
