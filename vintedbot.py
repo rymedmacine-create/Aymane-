@@ -50,13 +50,18 @@ CANAUX = {
     "iphone 16 pro": (1510867311144210462, 550),
     "iphone 16 plus": (1511368364033970327, 500),
     "iphone 16": (1510867255053779086, 640),
+    "iphone 17 pro max": (1523385875378081882, 700),
+    "iphone 17 pro": (1523385688287088960, 700),
+    "iphone 17": (1523385562537529465, 650),
+    "casquette gucci": (1523385459009654854, 350),
 }
 
 RECHERCHES = [
     "iphone 11", "iphone 12", "iphone 13",
     "iphone 14", "iphone 14 plus",
     "iphone 15", "iphone 15 plus",
-    "iphone 16", "iphone 16 plus"
+    "iphone 16", "iphone 16 plus",
+    "iphone 17", "iphone 17 pro", "iphone 17 pro max"
 ]
 PRIX_MIN = 30
 
@@ -65,7 +70,9 @@ RECHERCHES_MERCARI = [
     "iphone 11", "iphone 12", "iphone 13",
     "iphone 14", "iphone 14 plus",
     "iphone 15", "iphone 15 plus",
-    "iphone 16", "iphone 16 plus"
+    "iphone 16", "iphone 16 plus",
+    "iphone 17", "iphone 17 pro", "iphone 17 pro max",
+    "casquette gucci"
 ]
 
 # Taux JPY -> EUR. A ajuster manuellement de temps en temps (ou brancher une
