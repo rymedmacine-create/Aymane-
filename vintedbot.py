@@ -53,7 +53,8 @@ CANAUX = {
     "iphone 17 pro max": (1523385875378081882, 700),
     "iphone 17 pro": (1523385688287088960, 700),
     "iphone 17": (1523385562537529465, 650),
-    "casquette gucci": (1523385459009654854, 350),
+    "gucci cap": (1523385459009654854, 350),
+    "icloud": (1513538242375319582, 250),
 }
 
 RECHERCHES = [
@@ -61,9 +62,10 @@ RECHERCHES = [
     "iphone 14", "iphone 14 plus",
     "iphone 15", "iphone 15 plus",
     "iphone 16", "iphone 16 plus",
-    "iphone 17", "iphone 17 pro", "iphone 17 pro max"
+    "iphone 17", "iphone 17 pro", "iphone 17 pro max",
+    "gucci cap",
+    "iphone icloud", "iphone bloqué icloud"
 ]
-PRIX_MIN = 30
 
 # ─── Mercari JP : recherches + taux de conversion ──────────────────────────────
 RECHERCHES_MERCARI = [
@@ -72,7 +74,7 @@ RECHERCHES_MERCARI = [
     "iphone 15", "iphone 15 plus",
     "iphone 16", "iphone 16 plus",
     "iphone 17", "iphone 17 pro", "iphone 17 pro max",
-    "casquette gucci"
+    "グッチ キャップ"
 ]
 
 # Taux JPY -> EUR. A ajuster manuellement de temps en temps (ou brancher une
@@ -313,11 +315,40 @@ def normaliser(titre: str) -> str:
     return titre.lower().replace(" ", "").replace("\u3000", "")
 
 
+MOTS_ICLOUD = [
+    "icloud bloque", "icloud bloqué", "bloque icloud", "bloqué icloud",
+    "verrouille icloud", "verrouillé icloud", "icloud verrouille", "icloud verrouillé",
+    "compte icloud", "id icloud", "icloud locked", "icloud lock",
+    "find my iphone", "findmy", "trouver mon iphone"
+]
+
+
+def contient_icloud(titre_normalise: str) -> bool:
+    return any(normaliser(mot) in titre_normalise for mot in MOTS_ICLOUD)
+
+
+MOTS_GUCCI = ["gucci", "グッチ"]
+MOTS_CAP = ["cap", "casquette", "キャップ", "帽子", "hat", "ハット"]
+
+
+def contient_gucci_cap(titre_normalise: str) -> bool:
+    a_gucci = any(mot in titre_normalise for mot in MOTS_GUCCI)
+    a_cap = any(mot in titre_normalise for mot in MOTS_CAP)
+    return a_gucci and a_cap
+
+
 def extraire_modele(titre):
-    titre = titre.lower()
+    titre_l = titre.lower()
+    tn = normaliser(titre_l)
+    if contient_icloud(tn) and "icloud" in CANAUX:
+        return "icloud"
+    if contient_gucci_cap(tn) and "gucci cap" in CANAUX:
+        return "gucci cap"
     modeles = sorted(CANAUX.keys(), key=lambda x: -len(x))
     for modele in modeles:
-        if modele in titre:
+        if modele in ("icloud", "gucci cap"):
+            continue
+        if modele in titre_l:
             return modele
     return None
 
@@ -326,8 +357,14 @@ def extraire_modele_normalise(titre):
     """Meme logique que extraire_modele mais tolerante aux espaces/majuscules
     japonaises (utile pour les titres Mercari)."""
     t = normaliser(titre)
+    if contient_icloud(t) and "icloud" in CANAUX:
+        return "icloud"
+    if contient_gucci_cap(t) and "gucci cap" in CANAUX:
+        return "gucci cap"
     modeles = sorted(CANAUX.keys(), key=lambda x: -len(x))
     for modele in modeles:
+        if modele in ("icloud", "gucci cap"):
+            continue
         if normaliser(modele) in t:
             return modele
     return None
